@@ -2,13 +2,16 @@
 
 namespace Illuminate\Tests\Integration\Queue;
 
+use Illuminate\Bus\Batchable;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Schema;
 use Orchestra\Testbench\TestCase;
 
 class JobChainingTest extends TestCase
@@ -24,6 +27,24 @@ class JobChainingTest extends TestCase
         $app['config']->set('queue.connections.sync2', [
             'driver' => 'sync',
         ]);
+    }
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        Schema::create('job_batches', function (Blueprint $table) {
+            $table->string('id')->primary();
+            $table->string('name');
+            $table->integer('total_jobs');
+            $table->integer('pending_jobs');
+            $table->integer('failed_jobs');
+            $table->longText('failed_job_ids');
+            $table->mediumText('options')->nullable();
+            $table->integer('cancelled_at')->nullable();
+            $table->integer('created_at');
+            $table->integer('finished_at')->nullable();
+        });
     }
 
     protected function tearDown(): void
@@ -244,6 +265,37 @@ class JobChainingTest extends TestCase
 
         $this->assertNotNull(JobChainAddingAddedJob::$ranAt);
     }
+
+    /**
+     * @group debug
+     *
+     * @return void
+     */
+    public function testBatchCanBeAddedToChain()
+    {
+        $batched = [
+            new JobChainingTestBatchedJob,
+            new JobChainingTestBatchedJob,
+            new JobChainingTestBatchedJob,
+            new JobChainingTestBatchedJob,
+        ];
+        Bus::chain([
+            new JobChainingTestFirstJob,
+            new JobChainingTestSecondJob,
+            Bus::batch($batched)->chain(),
+            new JobChainingTestThirdJob,
+        ])->dispatch();
+
+        $this->assertTrue(JobChainingTestFirstJob::$ran);
+        $this->assertTrue(JobChainingTestSecondJob::$ran);
+        foreach (JobChainingTestBatchedJob::$runs as $run) {
+            $this->assertTrue($run['ran']);
+            $this->assertTrue($run['ran_after_second_job']);
+            $this->assertTrue($run['ran_before_third_job']);
+        }
+        $this->assertEquals(4, count(JobChainingTestBatchedJob::$runs));
+        $this->assertTrue(JobChainingTestThirdJob::$ran);
+    }
 }
 
 class JobChainingTestFirstJob implements ShouldQueue
@@ -380,5 +432,21 @@ class JobChainingTestThrowJob implements ShouldQueue
     public function handle()
     {
         throw new \Exception();
+    }
+}
+
+class JobChainingTestBatchedJob implements ShouldQueue
+{
+    use Batchable, Dispatchable, InteractsWithQueue,Queueable;
+
+    public static $runs = [];
+
+    public function handle()
+    {
+        static::$runs[] = [
+            'ran' => true,
+            'ran_after_second_job' => (JobChainingTestSecondJob::$ran === true),
+            'ran_before_third_job' => (JobChainingTestThirdJob::$ran === false),
+        ];
     }
 }

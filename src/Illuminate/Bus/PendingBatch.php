@@ -272,6 +272,11 @@ class PendingBatch
         return $batch;
     }
 
+    public function chain()
+    {
+        return new ChainedBatch($this);
+    }
+
     /**
      * Dispatch the batch after the response is sent to the browser.
      *
