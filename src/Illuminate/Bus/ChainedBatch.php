@@ -33,6 +33,14 @@ class ChainedBatch implements ShouldQueue
 
         $this->hijackChain($batch);
 
+        if ($this->queue) {
+            $batch->onQueue($this->queue);
+        }
+
+        if ($this->connection) {
+            $batch->onConnection($this->connection);
+        }
+
         $batch->dispatch();
     }
 
