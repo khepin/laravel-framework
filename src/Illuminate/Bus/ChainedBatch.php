@@ -41,6 +41,11 @@ class ChainedBatch implements ShouldQueue
             $batch->onConnection($this->connection);
         }
 
+        // Chain callbacks only take an exception argument
+        foreach ($this->chainCatchCallbacks as $cb) {
+            $batch->catch($cb);
+        }
+
         $batch->dispatch();
     }
 

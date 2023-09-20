@@ -45,6 +45,8 @@ class JobChainingTest extends TestCase
             $table->integer('created_at');
             $table->integer('finished_at')->nullable();
         });
+
+        JobRunRecorder::reset();
     }
 
     protected function tearDown(): void
@@ -266,35 +268,35 @@ class JobChainingTest extends TestCase
         $this->assertNotNull(JobChainAddingAddedJob::$ranAt);
     }
 
-    /**
-     * @group debug
-     *
-     * @return void
-     */
     public function testBatchCanBeAddedToChain()
     {
-        $batched = [
-            new JobChainingTestBatchedJob,
-            new JobChainingTestBatchedJob,
-            new JobChainingTestBatchedJob,
-            new JobChainingTestBatchedJob,
-        ];
         Bus::chain([
-            new JobChainingTestFirstJob,
-            new JobChainingTestSecondJob,
-            Bus::batch($batched)->chain(),
-            new JobChainingTestThirdJob,
+            new JobChainingNamedTestJob('c1'),
+            new JobChainingNamedTestJob('c2'),
+            Bus::batch([
+                new JobChainingTestBatchedJob('b1'),
+                new JobChainingTestBatchedJob('b2'),
+                new JobChainingTestBatchedJob('b3'),
+                new JobChainingTestBatchedJob('b4'),
+            ]),
+            new JobChainingNamedTestJob('c3'),
         ])->dispatch();
 
-        $this->assertTrue(JobChainingTestFirstJob::$ran);
-        $this->assertTrue(JobChainingTestSecondJob::$ran);
-        foreach (JobChainingTestBatchedJob::$runs as $run) {
-            $this->assertTrue($run['ran']);
-            $this->assertTrue($run['ran_after_second_job']);
-            $this->assertTrue($run['ran_before_third_job']);
-        }
-        $this->assertEquals(4, count(JobChainingTestBatchedJob::$runs));
-        $this->assertTrue(JobChainingTestThirdJob::$ran);
+        $this->assertEquals(['c1', 'c2', 'b1', 'b2', 'b3', 'b4', 'c3'], JobRunRecorder::$results);
+    }
+
+    public function testBatchCatchCallbacks()
+    {
+        Bus::chain([
+            new JobChainingNamedTestJob('c1'),
+            new JobChainingNamedTestJob('c2'),
+            Bus::batch([
+                new JobChainingTestFailingBatchedJob('fb1'),
+            ])->catch(fn () => JobRunRecorder::recordFailure('batch failed')),
+        ])->catch(fn () => JobRunRecorder::recordFailure('chain failed'))->dispatch();
+
+        $this->assertEquals(['c1', 'c2'], JobRunRecorder::$results);
+        $this->assertEquals(['batch failed', 'chain failed'], JobRunRecorder::$failures);
     }
 }
 
@@ -303,7 +305,9 @@ class JobChainingTestFirstJob implements ShouldQueue
     use Dispatchable, Queueable;
 
     public static $ran = false;
+
     public static $usedQueue = null;
+
     public static $usedConnection = null;
 
     public function handle()
@@ -319,7 +323,9 @@ class JobChainingTestSecondJob implements ShouldQueue
     use Dispatchable, Queueable;
 
     public static $ran = false;
+
     public static $usedQueue = null;
+
     public static $usedConnection = null;
 
     public function handle()
@@ -335,7 +341,9 @@ class JobChainingTestThirdJob implements ShouldQueue
     use Dispatchable, Queueable;
 
     public static $ran = false;
+
     public static $usedQueue = null;
+
     public static $usedConnection = null;
 
     public function handle()
@@ -435,18 +443,73 @@ class JobChainingTestThrowJob implements ShouldQueue
     }
 }
 
-class JobChainingTestBatchedJob implements ShouldQueue
+class JobChainingNamedTestJob implements ShouldQueue
 {
-    use Batchable, Dispatchable, InteractsWithQueue,Queueable;
+    use Dispatchable, InteractsWithQueue, Queueable;
 
-    public static $runs = [];
+    public static $results = [];
+
+    public string $id;
+
+    public function __construct(string $id)
+    {
+        $this->id = $id;
+    }
 
     public function handle()
     {
-        static::$runs[] = [
-            'ran' => true,
-            'ran_after_second_job' => (JobChainingTestSecondJob::$ran === true),
-            'ran_before_third_job' => (JobChainingTestThirdJob::$ran === false),
-        ];
+        JobRunRecorder::record($this->id);
+    }
+}
+
+class JobChainingTestBatchedJob implements ShouldQueue
+{
+    use Batchable, Dispatchable, InteractsWithQueue, Queueable;
+
+    public string $id;
+
+    public function __construct(string $id)
+    {
+        $this->id = $id;
+    }
+
+    public function handle()
+    {
+        JobRunRecorder::record($this->id);
+    }
+}
+
+class JobChainingTestFailingBatchedJob implements ShouldQueue
+{
+    use Batchable, Dispatchable, InteractsWithQueue, Queueable;
+
+    public function handle()
+    {
+        $this->fail();
+    }
+}
+
+class JobRunRecorder
+{
+    public static $results = [];
+
+    public static $failures = [];
+
+    public static function record(string $id)
+    {
+        self::$results[] = $id;
+    }
+
+    public static function recordFailure(string $message)
+    {
+        self::$failures[] = $message;
+
+        return $message;
+    }
+
+    public static function reset()
+    {
+        self::$results = [];
+        self::$failures = [];
     }
 }
